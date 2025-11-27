@@ -3,3 +3,4 @@ Pillow
 pynput
 pyperclip
 pyautogui
+mss

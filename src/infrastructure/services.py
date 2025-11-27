@@ -1,27 +1,33 @@
 import time
 import threading
-from PIL import ImageGrab
+import mss
 import pyautogui
 import pyperclip
 from pynput import keyboard
 from typing import Callable
 
 class ScreenService:
-    """Servicio para leer píxeles de la pantalla."""
+    """Servicio de captura de pantalla ultra-rápido usando MSS."""
     
+    def __init__(self):
+        self.sct = mss.mss()
+
     def get_color_at_cursor(self) -> tuple[int, int, int]:
-        """Obtiene el color RGB bajo el cursor del mouse."""
+        """
+        Obtiene el color RGB bajo el cursor.
+        Soporta monitores negativos (arriba/izquierda) correctamente.
+        """
         x, y = pyautogui.position()
         
-        # --- CORRECCIÓN MULTI-MONITOR ---
-        # all_screens=True permite capturar píxeles en monitores secundarios.
-        # bbox define el área de 1x1 píxel que queremos leer.
-        try:
-            image = ImageGrab.grab(bbox=(x, y, x+1, y+1), all_screens=True)
-            return image.getpixel((0, 0))
-        except Exception:
-            # Fallback de seguridad: si falla (ej. coordenadas negativas extremas), retornar negro
-            return (0, 0, 0)
+        # Definimos una región de 1x1 píxel en la posición del mouse
+        monitor = {"top": y, "left": x, "width": 1, "height": 1}
+        
+        # Capturamos esa región
+        sct_img = self.sct.grab(monitor)
+        
+        # MSS devuelve BGRA, necesitamos convertir a RGB
+        # pixel(0, 0) devuelve (R, G, B) directamente en versiones modernas
+        return sct_img.pixel(0, 0)
 
 class ClipboardService:
     """Servicio para interactuar con el portapapeles."""
@@ -39,17 +45,15 @@ class InputListener:
         self.is_active = False
 
     def start(self):
-        """Inicia la escucha no bloqueante."""
         if not self.listener:
             self.is_active = True
-            # Usamos la tecla 'INSERT' (o 'INS') como disparador
+            # Usamos INSERT como disparador
             self.listener = keyboard.GlobalHotKeys({
                 '<insert>': self._on_activate
             })
             self.listener.start()
 
     def stop(self):
-        """Detiene la escucha."""
         self.is_active = False
         if self.listener:
             self.listener.stop()

@@ -6,71 +6,118 @@ class ChromaApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        # Configuración Ventana
-        self.title("ChromaGrab 🎨")
-        self.geometry("400x500")
-        self.attributes("-topmost", True) # Siempre visible por defecto
+        self.title("ChromaGrab")
+        self.geometry("480x600")
         ctk.set_appearance_mode("Dark")
+        self.attributes("-topmost", True) 
         
-        # Servicios
+        # Inyección de dependencias
         self.screen_svc = ScreenService()
         self.clip_svc = ClipboardService()
         
-        # Listener (Hilos)
-        self.listener = InputListener(on_trigger=self.perform_capture)
+        # Hilo de escucha
+        self.listener = InputListener(on_trigger=self.trigger_capture)
         self.listener.start()
         
         self._setup_ui()
 
     def _setup_ui(self):
-        # Header
-        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.pack(pady=15, padx=20, fill="x")
+        # --- HEADER ---
+        self.header = ctk.CTkFrame(self, fg_color="transparent")
+        self.header.pack(fill="x", padx=20, pady=(20, 10))
         
-        ctk.CTkLabel(self.header_frame, text="Presiona [INSERT] para capturar", 
-                     font=("Roboto", 14, "bold"), text_color="gray").pack()
-
-        # Área de Historial
-        self.scroll_frame = ctk.CTkScrollableFrame(self, label_text="Historial de Colores")
-        self.scroll_frame.pack(fill="both", expand=True, padx=15, pady=10)
-
-        # Botones Footer
-        self.footer = ctk.CTkFrame(self, height=50)
-        self.footer.pack(fill="x", side="bottom")
+        ctk.CTkLabel(self.header, text="Capturador de Color", 
+                     font=("Segoe UI", 20, "bold")).pack(side="left")
         
-        self.btn_clear = ctk.CTkButton(self.footer, text="Limpiar Historial", 
-                                       fg_color="#FF5555", hover_color="#CC0000",
+        # Switch Siempre Visible
+        self.top_var = ctk.BooleanVar(value=True)
+        self.switch = ctk.CTkSwitch(self.header, text="Siempre Visible", 
+                                    variable=self.top_var, command=self.toggle_top,
+                                    font=("Segoe UI", 12))
+        self.switch.pack(side="right")
+
+        # Instrucción
+        ctk.CTkLabel(self, text="Mueve el mouse y presiona [INSERT]", 
+                     text_color="gray").pack(pady=(0, 10))
+
+        # --- LISTA ---
+        # Encabezados de la lista
+        self.list_header = ctk.CTkFrame(self, fg_color="transparent", height=30)
+        self.list_header.pack(fill="x", padx=25)
+        ctk.CTkLabel(self.list_header, text="Color", width=60, anchor="w").pack(side="left")
+        ctk.CTkLabel(self.list_header, text="Código", width=120, anchor="w").pack(side="left", padx=10)
+        ctk.CTkLabel(self.list_header, text="Copiar Formato", width=100, anchor="e").pack(side="right")
+
+        self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color="#2B2B2B")
+        self.scroll_frame.pack(fill="both", expand=True, padx=15, pady=5)
+
+        # --- FOOTER ---
+        self.btn_clear = ctk.CTkButton(self, text="Limpiar Historial", 
+                                       fg_color="#333333", hover_color="#C62828",
                                        command=self.clear_history)
-        self.btn_clear.pack(pady=10)
+        self.btn_clear.pack(pady=15)
 
-    def perform_capture(self):
-        """Método llamado por el hilo del teclado."""
+    def toggle_top(self):
+        self.attributes("-topmost", self.top_var.get())
+
+    def trigger_capture(self):
+        self.after(0, self.process_capture)
+
+    def process_capture(self):
         try:
-            # Ejecutar caso de uso
-            color = capture_color_use_case(self.screen_svc, self.clip_svc)
+            # 1. Capturar (Use Case Puro)
+            color = capture_color_use_case(self.screen_svc)
             
-            # Actualizar GUI (Debe hacerse en el hilo principal)
-            # 'after' programa la ejecución en el main loop de Tkinter
-            self.after(0, lambda: self.add_color_to_list(color))
+            # 2. Agregar a la UI
+            self.add_color_row(color)
+            
+            # 3. Copiar HEX por defecto (feedback inmediato)
+            self.copy_to_clip(color.hex_code)
             
         except Exception as e:
             print(f"Error: {e}")
 
-    def add_color_to_list(self, color):
-        # Crear tarjeta de color
-        card = ctk.CTkFrame(self.scroll_frame)
-        card.pack(fill="x", pady=5)
+    def add_color_row(self, color):
+        # Contenedor de la fila
+        row = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        row.pack(fill="x", pady=5)
         
-        # Muestra visual del color
-        color_box = ctk.CTkLabel(card, text="   ", fg_color=color.hex_code, width=30, corner_radius=5)
-        color_box.pack(side="left", padx=10, pady=5)
+        # 1. Muestra de Color
+        try:
+            box = ctk.CTkLabel(row, text="", fg_color=color.hex_code, 
+                               width=40, height=30, corner_radius=6)
+        except:
+            box = ctk.CTkLabel(row, text="?", width=40)
+        box.pack(side="left", padx=(5, 10))
         
-        # Texto Hex
-        lbl = ctk.CTkLabel(card, text=f"{color.hex_code}", font=("Consolas", 14, "bold"))
-        lbl.pack(side="left", padx=10)
-        
-        # Indicador de copiado
-        ctk.CTkLabel(card, text="Copiado!", text_color="green", font=("Arial", 10)).pack(side="right", padx=10)
+        # 2. Código Visual (Solo informativo)
+        code_lbl = ctk.CTkLabel(row, text=color.hex_code, 
+                                font=("Consolas", 14, "bold"))
+        code_lbl.pack(side="left")
+
+        # 3. Botones de Acción (Derecha)
+        actions = ctk.CTkFrame(row, fg_color="transparent")
+        actions.pack(side="right")
+
+        # Botón HEX
+        btn_hex = ctk.CTkButton(actions, text="HEX", width=50, height=25,
+                                font=("Segoe UI", 11, "bold"),
+                                fg_color="#1E88E5", hover_color="#1565C0",
+                                command=lambda: self.copy_to_clip(color.hex_code))
+        btn_hex.pack(side="left", padx=2)
+
+        # Botón RGB
+        rgb_str = f"{color.rgb_tuple}"
+        btn_rgb = ctk.CTkButton(actions, text="RGB", width=50, height=25,
+                                font=("Segoe UI", 11, "bold"),
+                                fg_color="#43A047", hover_color="#2E7D32",
+                                command=lambda: self.copy_to_clip(rgb_str))
+        btn_rgb.pack(side="left", padx=2)
+
+    def copy_to_clip(self, text):
+        self.clip_svc.copy(text)
+        # Podríamos poner un toast notification aquí en el futuro
+        # Por ahora, sabemos que funciona.
 
     def clear_history(self):
         for widget in self.scroll_frame.winfo_children():

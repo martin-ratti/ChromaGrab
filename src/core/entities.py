@@ -6,6 +6,9 @@ class ColorCapture:
     hex_code: str
     rgb_tuple: tuple[int, int, int]
     
-    @property
-    def display_string(self) -> str:
-        return f"{self.hex_code}  RGB{self.rgb_tuple}"
+    def get_formatted(self, format_type: str) -> str:
+        """Devuelve el string del color según el formato solicitado."""
+        if format_type == "RGB":
+            return f"{self.rgb_tuple}" # Salida: (255, 0, 0)
+        # Por defecto HEX
+        return self.hex_code
