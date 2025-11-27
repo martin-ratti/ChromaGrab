@@ -12,10 +12,16 @@ class ScreenService:
     def get_color_at_cursor(self) -> tuple[int, int, int]:
         """Obtiene el color RGB bajo el cursor del mouse."""
         x, y = pyautogui.position()
-        # Capturamos solo 1 pixel para máxima eficiencia
-        # bbox = (left, top, right, bottom)
-        image = ImageGrab.grab(bbox=(x, y, x+1, y+1))
-        return image.getpixel((0, 0))
+        
+        # --- CORRECCIÓN MULTI-MONITOR ---
+        # all_screens=True permite capturar píxeles en monitores secundarios.
+        # bbox define el área de 1x1 píxel que queremos leer.
+        try:
+            image = ImageGrab.grab(bbox=(x, y, x+1, y+1), all_screens=True)
+            return image.getpixel((0, 0))
+        except Exception:
+            # Fallback de seguridad: si falla (ej. coordenadas negativas extremas), retornar negro
+            return (0, 0, 0)
 
 class ClipboardService:
     """Servicio para interactuar con el portapapeles."""
