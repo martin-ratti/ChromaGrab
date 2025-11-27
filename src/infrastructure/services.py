@@ -1,18 +1,22 @@
 import mss
 import pyautogui
 import pyperclip
+import winsound  # <--- Para el sonido
 from pynput import keyboard
-from PIL import Image
 from typing import Callable
+from PIL import Image
 import platform
 import ctypes
 
-# Fix DPI para Windows (Alta resolución / Múltiples monitores)
+# Fix DPI
 if platform.system() == "Windows":
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        ctypes.windll.shcore.SetProcessDpiAwareness(1) 
     except Exception:
-        ctypes.windll.user32.SetProcessDPIAware()
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 class ScreenService:
     def __init__(self):
@@ -28,50 +32,52 @@ class ScreenService:
             return (0, 0, 0)
 
     def get_zoom_image(self, radius: int = 10, zoom_factor: int = 8) -> Image.Image:
-        """
-        Captura un área alrededor del mouse y la escala para efecto lupa.
-        radius: Cuántos píxeles capturar hacia cada lado (10 = área de 20x20)
-        zoom_factor: Cuánto agrandar cada píxel.
-        """
         x, y = pyautogui.position()
-        
-        # Definir el cuadro a capturar (centrado en el mouse)
-        # MSS maneja coordenadas negativas automáticamente
         monitor = {
             "top": int(y - radius), 
             "left": int(x - radius), 
             "width": int(radius * 2), 
             "height": int(radius * 2)
         }
-        
         try:
             sct_img = self.sct.grab(monitor)
-            
-            # Convertir a PIL Image
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-            
-            # Escalar imagen (Algoritmo NEAREST para mantener los píxeles cuadrados)
             new_size = (img.width * zoom_factor, img.height * zoom_factor)
             return img.resize(new_size, resample=Image.Resampling.NEAREST)
-            
         except Exception:
-            # Retorna una imagen negra si falla (ej. bordes de pantalla extremos)
             return Image.new("RGB", (radius*2*zoom_factor, radius*2*zoom_factor), "black")
 
 class ClipboardService:
     def copy(self, text: str):
         pyperclip.copy(text)
 
+class SoundService:
+    """Genera sonidos de sistema agradables."""
+    
+    def play_capture(self):
+        # Reproduce un 'bip' agudo y corto (1000Hz, 100ms)
+        # Esto suena más 'tech' y menos 'error de windows'
+        winsound.Beep(1000, 100) 
+
 class InputListener:
-    def __init__(self, on_trigger: Callable):
-        self.on_trigger = on_trigger
+    """
+    Escucha global de teclas.
+    Ahora soporta captura (INSERT) y toggle de zoom (ALT+Z).
+    """
+    def __init__(self, on_capture: Callable, on_toggle_zoom: Callable):
+        self.on_capture = on_capture
+        self.on_toggle_zoom = on_toggle_zoom
         self.listener = None
         self.is_active = False
 
     def start(self):
         if not self.listener:
             self.is_active = True
-            self.listener = keyboard.GlobalHotKeys({'<insert>': self._on_activate})
+            # Definimos los atajos aquí
+            self.listener = keyboard.GlobalHotKeys({
+                '<insert>': self._on_capture_trigger,
+                '<alt>+z': self._on_zoom_trigger
+            })
             self.listener.start()
 
     def stop(self):
@@ -80,6 +86,8 @@ class InputListener:
             self.listener.stop()
             self.listener = None
 
-    def _on_activate(self):
-        if self.is_active:
-            self.on_trigger()
+    def _on_capture_trigger(self):
+        if self.is_active: self.on_capture()
+
+    def _on_zoom_trigger(self):
+        if self.is_active: self.on_toggle_zoom()

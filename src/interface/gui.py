@@ -2,11 +2,10 @@ import customtkinter as ctk
 from PIL import Image, ImageTk
 import pyautogui
 from src.core.use_cases import capture_color_use_case
-from src.infrastructure.services import ScreenService, ClipboardService, InputListener
-from src.infrastructure.repositories import JsonColorRepository # <--- NUEVO
+from src.infrastructure.services import ScreenService, ClipboardService, InputListener, SoundService
+from src.infrastructure.repositories import JsonColorRepository
 
 class ZoomWindow(ctk.CTkToplevel):
-    """Ventana flotante que muestra el zoom."""
     def __init__(self, master):
         super().__init__(master)
         self.overrideredirect(True) 
@@ -21,9 +20,10 @@ class ZoomWindow(ctk.CTkToplevel):
         self.photo = ImageTk.PhotoImage(pil_image)
         self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
         
+        # Ajuste de precisión
         zoom = 8
-        pixel_start = 10 * zoom  # 80
-        pixel_end = pixel_start + zoom # 88
+        pixel_start = 10 * zoom
+        pixel_end = pixel_start + zoom
         
         self.canvas.delete("reticula")
         self.canvas.create_rectangle(
@@ -42,34 +42,36 @@ class ChromaApp(ctk.CTk):
         super().__init__()
         
         self.title("ChromaGrab")
-        self.geometry("480x650")
+        self.geometry("520x650")
         ctk.set_appearance_mode("Dark")
         self.attributes("-topmost", True) 
         
         # Dependencias
         self.screen_svc = ScreenService()
         self.clip_svc = ClipboardService()
-        self.repo = JsonColorRepository() # <--- NUEVO: Repositorio
+        self.sound_svc = SoundService() # <--- NUEVO
+        self.repo = JsonColorRepository()
         
         # Estado
         self.zoom_active = False
         self.zoom_window = None
-        self.history = [] # <--- NUEVO: Estado en memoria
+        self.history = []
         
-        # Listener
-        self.listener = InputListener(on_trigger=self.trigger_capture)
+        # Listener (Ahora pasamos dos funciones)
+        self.listener = InputListener(
+            on_capture=self.trigger_capture,
+            on_toggle_zoom=self.trigger_zoom_toggle
+        )
         self.listener.start()
         
         self._setup_ui()
-        
-        # Cargar datos guardados al iniciar
         self.after(100, self.load_saved_history)
 
     def _setup_ui(self):
         # HEADER
         self.header = ctk.CTkFrame(self, fg_color="transparent")
         self.header.pack(fill="x", padx=20, pady=(15, 5))
-        ctk.CTkLabel(self.header, text="ChromaGrab 2.1", font=("Segoe UI", 20, "bold")).pack(side="left")
+        ctk.CTkLabel(self.header, text="ChromaGrab 2.3", font=("Segoe UI", 20, "bold")).pack(side="left")
         
         self.top_var = ctk.BooleanVar(value=True)
         self.switch_top = ctk.CTkSwitch(self.header, text="Fijar Ventana", 
@@ -81,45 +83,90 @@ class ChromaApp(ctk.CTk):
         self.controls.pack(fill="x", padx=15, pady=10)
         
         self.zoom_var = ctk.BooleanVar(value=False)
-        self.switch_zoom = ctk.CTkSwitch(self.controls, text="Activar Lupa (Live Zoom)", 
-                                         variable=self.zoom_var, command=self.toggle_zoom,
+        self.switch_zoom = ctk.CTkSwitch(self.controls, text="Lupa (Alt + Z)", 
+                                         variable=self.zoom_var, command=self.toggle_zoom_ui,
                                          font=("Segoe UI", 13, "bold"), progress_color="#00E5FF")
-        self.switch_zoom.pack(pady=15)
+        self.switch_zoom.pack(pady=10)
         
-        ctk.CTkLabel(self.controls, text="[INSERT] para capturar", text_color="gray").pack(pady=(0, 10))
+        ctk.CTkLabel(self.controls, text="[INSERT] para capturar", text_color="gray", font=("Arial", 11)).pack(pady=(0, 10))
 
         # LISTA
         self.list_header = ctk.CTkFrame(self, fg_color="transparent", height=20)
         self.list_header.pack(fill="x", padx=25)
-        ctk.CTkLabel(self.list_header, text="Color", width=60, anchor="w").pack(side="left")
-        ctk.CTkLabel(self.list_header, text="Hex", width=120, anchor="w").pack(side="left", padx=10)
+        ctk.CTkLabel(self.list_header, text="Color", width=50, anchor="w").pack(side="left")
+        ctk.CTkLabel(self.list_header, text="Hex", width=100, anchor="w").pack(side="left", padx=5)
         
         self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color="#1A1A1A")
         self.scroll_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
         # FOOTER
-        self.btn_clear = ctk.CTkButton(self, text="Limpiar Historial", 
+        self.btn_clear = ctk.CTkButton(self, text="Borrar Todo", 
                                        fg_color="#333333", hover_color="#C62828",
-                                       command=self.clear_history)
+                                       command=self.clear_all_history, height=30)
         self.btn_clear.pack(pady=15)
 
     def load_saved_history(self):
-        """Carga los colores del JSON y rellena la UI."""
-        saved_colors = self.repo.load_all()
-        self.history = saved_colors # Sincronizar estado
+        self.history = self.repo.load_all()
+        self.refresh_list_ui()
+
+    def refresh_list_ui(self):
+        for w in self.scroll_frame.winfo_children(): w.destroy()
+        for index, color in enumerate(reversed(self.history)):
+            real_index = len(self.history) - 1 - index
+            self.draw_row(color, real_index)
+
+    def draw_row(self, color, real_index):
+        row = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+        try:
+            box = ctk.CTkLabel(row, text="", fg_color=color.hex_code, width=35, height=25, corner_radius=4)
+        except:
+            box = ctk.CTkLabel(row, text="?", width=35)
+        box.pack(side="left", padx=5)
+        ctk.CTkLabel(row, text=color.hex_code, font=("Consolas", 13, "bold"), width=80, anchor="w").pack(side="left", padx=5)
         
-        # Renderizar en orden inverso (nuevos arriba) si prefieres, 
-        # o normal. Aquí cargamos normal.
-        for color in saved_colors:
-            self.add_color_row_ui(color)
+        actions = ctk.CTkFrame(row, fg_color="transparent")
+        actions.pack(side="right")
+        
+        ctk.CTkButton(actions, text="HEX", width=40, height=22, font=("Arial", 10, "bold"),
+                      fg_color="#222222", hover_color="#444444", border_width=1, border_color="gray",
+                      command=lambda: self.clip_svc.copy(color.hex_code)).pack(side="left", padx=2)
+        rgb_val = str(color.rgb_tuple)
+        ctk.CTkButton(actions, text="RGB", width=40, height=22, font=("Arial", 10, "bold"),
+                      fg_color="#222222", hover_color="#444444", border_width=1, border_color="gray",
+                      command=lambda: self.clip_svc.copy(rgb_val)).pack(side="left", padx=2)
+        ctk.CTkButton(actions, text="✕", width=25, height=22, font=("Arial", 12, "bold"),
+                      fg_color="transparent", hover_color="#C62828", text_color="#FF5555",
+                      command=lambda idx=real_index: self.delete_single_color(idx)).pack(side="left", padx=(5, 0))
+
+    def delete_single_color(self, index):
+        if 0 <= index < len(self.history):
+            del self.history[index]
+            self.repo.save_all(self.history)
+            self.refresh_list_ui()
 
     def toggle_top(self):
         self.attributes("-topmost", self.top_var.get())
 
-    def toggle_zoom(self):
+    # --- Lógica de Zoom mejorada ---
+    def trigger_zoom_toggle(self):
+        """Llamado por el atajo de teclado (Hilo secundario)."""
+        self.after(0, self._sync_zoom_toggle)
+
+    def _sync_zoom_toggle(self):
+        """Sincroniza el switch de la UI y ejecuta la lógica."""
+        # Invertimos el estado actual del switch
+        current_state = self.zoom_var.get()
+        self.zoom_var.set(not current_state)
+        # Ejecutamos la lógica normal de toggle
+        self.toggle_zoom_ui()
+
+    def toggle_zoom_ui(self):
+        """Llamado al hacer clic en el switch o por el atajo."""
         if self.zoom_var.get():
             self.zoom_active = True
-            self.zoom_window = ZoomWindow(self)
+            if not self.zoom_window:
+                self.zoom_window = ZoomWindow(self)
             self._zoom_loop()
         else:
             self.zoom_active = False
@@ -134,66 +181,33 @@ class ChromaApp(ctk.CTk):
             self.zoom_window.move_near_mouse()
             self.after(30, self._zoom_loop)
 
+    # --- Captura ---
     def trigger_capture(self):
         self.after(0, self.process_capture)
 
     def process_capture(self):
         try:
-            # 1. Capturar
+            # 1. Sonido Nuevo
+            self.sound_svc.play_capture()
+            
+            # 2. Captura
             color = capture_color_use_case(self.screen_svc)
             
-            # 2. Actualizar Estado (Memoria)
-            # Insertamos al principio para que sea LIFO (Last In First Out) visualmente? 
-            # Mejor append normal y scroll, o insert(0). Usaremos append normal.
+            # 3. Guardar y Mostrar
             self.history.append(color)
-            
-            # 3. Guardar en Disco (Persistencia)
             self.repo.save_all(self.history)
+            self.refresh_list_ui()
             
-            # 4. Actualizar UI
-            self.add_color_row_ui(color)
-            
-            # 5. Copiar (Feedback)
+            # 4. Copiar HEX
             self.clip_svc.copy(color.hex_code)
             
         except Exception as e:
             print(e)
 
-    def add_color_row_ui(self, color):
-        """Solo dibuja la fila en la GUI (separado de la lógica de datos)."""
-        row = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        row.pack(fill="x", pady=2)
-        
-        try:
-            box = ctk.CTkLabel(row, text="", fg_color=color.hex_code, width=40, height=25, corner_radius=4)
-        except:
-            box = ctk.CTkLabel(row, text="?", width=40)
-        box.pack(side="left", padx=5)
-        
-        ctk.CTkLabel(row, text=color.hex_code, font=("Consolas", 13, "bold")).pack(side="left", padx=5)
-        
-        actions = ctk.CTkFrame(row, fg_color="transparent")
-        actions.pack(side="right")
-        
-        ctk.CTkButton(actions, text="HEX", width=40, height=20, font=("Arial", 10, "bold"),
-                      fg_color="#222222", hover_color="#444444", border_width=1, border_color="gray",
-                      command=lambda: self.clip_svc.copy(color.hex_code)).pack(side="left", padx=2)
-                      
-        rgb_val = str(color.rgb_tuple)
-        ctk.CTkButton(actions, text="RGB", width=40, height=20, font=("Arial", 10, "bold"),
-                      fg_color="#222222", hover_color="#444444", border_width=1, border_color="gray",
-                      command=lambda: self.clip_svc.copy(rgb_val)).pack(side="left", padx=2)
-        
-        # Auto-scroll hacia abajo para ver el nuevo
-        # self.scroll_frame._parent_canvas.yview_moveto(1.0) 
-
-    def clear_history(self):
-        # 1. Limpiar UI
-        for w in self.scroll_frame.winfo_children(): w.destroy()
-        # 2. Limpiar Estado
+    def clear_all_history(self):
         self.history.clear()
-        # 3. Limpiar Disco
         self.repo.save_all([])
+        self.refresh_list_ui()
 
     def on_close(self):
         self.zoom_active = False
