@@ -1,9 +1,13 @@
 import customtkinter as ctk
 from PIL import Image, ImageTk
 import pyautogui
+import winsound
 from src.core.use_cases import capture_color_use_case
 from src.infrastructure.services import ScreenService, ClipboardService, InputListener, SoundService
 from src.infrastructure.repositories import JsonColorRepository
+
+# --- CONFIGURACIÓN ---
+HISTORY_LIMIT = 50 # Máximo de colores guardados para evitar lag a largo plazo
 
 class ZoomWindow(ctk.CTkToplevel):
     def __init__(self, master):
@@ -16,24 +20,38 @@ class ZoomWindow(ctk.CTkToplevel):
                                     highlightthickness=2, highlightbackground="#00E5FF")
         self.canvas.pack(fill="both", expand=True)
         
-    def update_image(self, pil_image):
-        self.photo = ImageTk.PhotoImage(pil_image)
-        self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
+        # --- OPTIMIZACIÓN DE RENDERIZADO ---
+        # Creamos los objetos UNA SOLA VEZ y guardamos sus IDs.
+        # Esto evita la fuga de memoria de crear miles de items por minuto.
         
-        zoom = 8
-        pixel_start = 10 * zoom
-        pixel_end = pixel_start + zoom
+        # 1. Placeholder de Imagen (Fondo)
+        self.image_id = self.canvas.create_image(0, 0, anchor="nw")
         
-        self.canvas.delete("reticula")
-        self.canvas.create_rectangle(
+        # 2. Retícula Fija (No necesita recalcularse en cada frame)
+        # Zoom 8x, Centro en (10,10) -> Pixel canvas (80, 80) a (88, 88)
+        pixel_start = 80
+        pixel_end = 88
+        self.rect_id = self.canvas.create_rectangle(
             pixel_start, pixel_start, 
             pixel_end, pixel_end, 
-            outline="#FF0000", width=2,
-            tags="reticula" 
+            outline="#FF0000", width=2
         )
+        
+    def update_image(self, pil_image):
+        # Convertir imagen
+        self.photo = ImageTk.PhotoImage(pil_image)
+        
+        # Actualizar solo el contenido de la imagen existente
+        # (Operación de costo casi cero)
+        self.canvas.itemconfig(self.image_id, image=self.photo)
+        
+        # Asegurar que el cuadro rojo siempre esté encima de la foto
+        self.canvas.tag_raise(self.rect_id)
 
     def move_near_mouse(self):
+        # Obtenemos posición cruda
         x, y = pyautogui.position()
+        # Actualizamos geometría
         self.geometry(f"+{int(x) + 20}+{int(y) + 20}")
 
 class ChromaApp(ctk.CTk):
@@ -53,6 +71,7 @@ class ChromaApp(ctk.CTk):
         self.zoom_active = False
         self.zoom_window = None
         self.history = []
+        self.widget_map = {} # Cache de widgets para borrado O(1)
         self.is_compact = False
         self.last_capture = None 
         
@@ -72,7 +91,7 @@ class ChromaApp(ctk.CTk):
 
         self.header = ctk.CTkFrame(self.expanded_container, fg_color="transparent")
         self.header.pack(fill="x", padx=20, pady=(15, 5))
-        ctk.CTkLabel(self.header, text="ChromaGrab 2.6", font=("Segoe UI", 20, "bold")).pack(side="left")
+        ctk.CTkLabel(self.header, text="ChromaGrab 3.0 Turbo", font=("Segoe UI", 20, "bold")).pack(side="left")
         
         self.btn_compact = ctk.CTkButton(self.header, text="Modo Barra ↗", width=90, height=25, 
                                          fg_color="#333", command=self.toggle_compact_mode)
@@ -101,7 +120,6 @@ class ChromaApp(ctk.CTk):
 
         # === MODO COMPACTO ===
         self.compact_container = ctk.CTkFrame(self, fg_color="#1A1A1A", corner_radius=0)
-        
         self.compact_color_box = ctk.CTkLabel(self.compact_container, text="", width=40, height=40, bg_color="gray", corner_radius=5)
         self.compact_color_box.pack(side="left", padx=(15, 10), pady=10)
         
@@ -114,10 +132,8 @@ class ChromaApp(ctk.CTk):
         self.compact_btns = ctk.CTkFrame(self.compact_center, fg_color="transparent")
         self.compact_btns.pack(anchor="w")
         
-        # Botones Compactos
         self.btn_comp_hex = ctk.CTkButton(self.compact_btns, text="HEX", width=40, height=20, 
                                           font=("Arial", 9, "bold"), fg_color="#222", hover_color="#444")
-        # Usamos lambda tardío para pasar el propio botón
         self.btn_comp_hex.configure(command=lambda: self.copy_last_hex(self.btn_comp_hex))
         self.btn_comp_hex.pack(side="left", padx=(0, 5))
         
@@ -130,24 +146,16 @@ class ChromaApp(ctk.CTk):
                                         fg_color="#333", command=self.toggle_compact_mode)
         self.btn_expand.pack(side="right", padx=15)
 
-    # --- Lógica de Copiado Unificada ---
+    # --- Helpers UI ---
     def copy_with_feedback(self, text, button_widget, original_text):
-        """Copia al portapapeles y hace parpadear el botón visualmente."""
         if not text: return
-        
-        # 1. Copiar
         self.clip_svc.copy(text)
-        
-        # 2. Flash Visual (Sin sonido)
         self._flash_button(button_widget, original_text)
 
     def _flash_button(self, button, original_text):
         if not button.winfo_exists(): return
-        
         original_fg = "#222"
         original_hover = "#444"
-        
-        # Estado "Éxito"
         button.configure(text="✔", fg_color="#2E7D32", hover_color="#1B5E20")
         
         def revert():
@@ -155,16 +163,13 @@ class ChromaApp(ctk.CTk):
                 if button.winfo_exists():
                     button.configure(text=original_text, fg_color=original_fg, hover_color=original_hover)
             except: pass
-        
         self.after(1000, revert)
 
-    def copy_last_hex(self, btn_widget):
-        if self.last_capture:
-            self.copy_with_feedback(self.last_capture.hex_code, btn_widget, "HEX")
+    def copy_last_hex(self, btn):
+        if self.last_capture: self.copy_with_feedback(self.last_capture.hex_code, btn, "HEX")
 
-    def copy_last_rgb(self, btn_widget):
-        if self.last_capture:
-            self.copy_with_feedback(str(self.last_capture.rgb_tuple), btn_widget, "RGB")
+    def copy_last_rgb(self, btn):
+        if self.last_capture: self.copy_with_feedback(str(self.last_capture.rgb_tuple), btn, "RGB")
 
     def toggle_compact_mode(self):
         self.is_compact = not self.is_compact
@@ -173,63 +178,62 @@ class ChromaApp(ctk.CTk):
             self.compact_container.pack(fill="both", expand=True)
             self.geometry("320x65") 
             self.attributes("-topmost", True)
-            if self.history:
-                self.update_compact_ui(self.history[-1])
+            if self.history: self.update_compact_ui(self.history[-1])
         else:
             self.compact_container.pack_forget()
             self.expanded_container.pack(fill="both", expand=True)
             self.geometry("520x650")
-            self.refresh_list_ui()
+            # La lista ya está actualizada gracias a insert_color_row_at_top
 
     def update_compact_ui(self, color):
         self.last_capture = color
         if self.is_compact:
-            try:
-                self.compact_color_box.configure(fg_color=color.hex_code)
+            try: self.compact_color_box.configure(fg_color=color.hex_code)
             except: pass
             self.compact_hex_lbl.configure(text=color.hex_code)
 
     def show_toast(self, message, color_hex):
         if self.is_compact: return
-
         toast = ctk.CTkFrame(self, fg_color="#333333", corner_radius=20, border_width=1, border_color="#555")
         toast.place(relx=0.5, rely=0.85, anchor="center")
-        try:
-            dot = ctk.CTkLabel(toast, text="●", font=("Arial", 20), text_color=color_hex)
-        except:
-            dot = ctk.CTkLabel(toast, text="●", font=("Arial", 20), text_color="white")
+        try: dot = ctk.CTkLabel(toast, text="●", font=("Arial", 20), text_color=color_hex)
+        except: dot = ctk.CTkLabel(toast, text="●", font=("Arial", 20), text_color="white")
         dot.pack(side="left", padx=(15, 5), pady=5)
         lbl = ctk.CTkLabel(toast, text=message, font=("Segoe UI", 12, "bold"), text_color="white")
         lbl.pack(side="left", padx=(0, 15), pady=5)
-        
-        # IMPORTANTE: Eliminada la llamada a sound_svc aquí para evitar sonido doble
         self.after(2000, toast.destroy)
 
+    # --- CORE CAPTURA ---
     def process_capture(self):
         try:
-            # ÚNICO lugar donde suena el sonido de captura
             self.sound_svc.play_capture()
-            
             color = capture_color_use_case(self.screen_svc)
             
-            self.history.append(color)
-            self.repo.save_all(self.history)
+            # Optimización: Límite de Historial
+            # Si superamos el límite, borramos el más viejo (el primero de la lista)
+            if len(self.history) >= HISTORY_LIMIT:
+                oldest_color = self.history.pop(0) # Remove from start (oldest)
+                self.delete_by_id(oldest_color.id, save=False) # Borrar visualmente sin guardar aún
             
-            if self.is_compact:
-                self.update_compact_ui(color)
-                # Flash visual en el botón HEX (formato default)
-                self._flash_button(self.btn_comp_hex, "HEX")
+            self.history.append(color)
+            self.repo.save_all(self.history) # Guardamos el estado limpio
+            
+            # Actualización Quirúrgica UI
+            if not self.is_compact:
+                self.insert_color_row_at_top(color)
             else:
-                self.refresh_list_ui()
+                self.update_compact_ui(color)
+                self._flash_button(self.btn_comp_hex, "HEX")
             
             self.clip_svc.copy(color.hex_code)
             self.show_toast(f"Copiado: {color.hex_code}", color.hex_code)
             
         except Exception as e:
-            print(e)
+            print(f"Error capture: {e}")
 
     def _zoom_loop(self):
         if self.zoom_active and self.zoom_window:
+            # Solo obtenemos y pintamos imagen. Super rápido.
             img = self.screen_svc.get_zoom_image(radius=10, zoom_factor=8)
             self.zoom_window.update_image(img)
             self.zoom_window.move_near_mouse()
@@ -237,50 +241,70 @@ class ChromaApp(ctk.CTk):
 
     def load_saved_history(self):
         self.history = self.repo.load_all()
-        if self.history:
-            self.last_capture = self.history[-1]
-        self.refresh_list_ui()
-
-    def refresh_list_ui(self):
+        if self.history: self.last_capture = self.history[-1]
+        
+        self.widget_map = {}
         for w in self.scroll_frame.winfo_children(): w.destroy()
-        for index, color in enumerate(reversed(self.history)):
-            real_index = len(self.history) - 1 - index
-            self.draw_row(color, real_index)
+        
+        for color in reversed(self.history):
+            self.create_row_widget(color)
 
-    def draw_row(self, color, real_index):
+    def insert_color_row_at_top(self, color):
+        current_widgets = self.scroll_frame.winfo_children()
+        new_row = self.create_row_widget(color, pack_now=False)
+        if current_widgets:
+            new_row.pack(before=current_widgets[0], fill="x", pady=2)
+        else:
+            new_row.pack(fill="x", pady=2)
+
+    def create_row_widget(self, color, pack_now=True):
         row = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        row.pack(fill="x", pady=2)
-        try:
-            box = ctk.CTkLabel(row, text="", fg_color=color.hex_code, width=35, height=25, corner_radius=4)
-        except:
-            box = ctk.CTkLabel(row, text="?", width=35)
+        self.widget_map[color.id] = row # Mapeo ID -> Widget
+        
+        try: box = ctk.CTkLabel(row, text="", fg_color=color.hex_code, width=35, height=25, corner_radius=4)
+        except: box = ctk.CTkLabel(row, text="?", width=35)
         box.pack(side="left", padx=5)
+        
         ctk.CTkLabel(row, text=color.hex_code, font=("Consolas", 13, "bold"), width=80, anchor="w").pack(side="left", padx=5)
         
         actions = ctk.CTkFrame(row, fg_color="transparent")
         actions.pack(side="right")
         
-        # Botones de la lista con Feedback Visual
         btn_hex = ctk.CTkButton(actions, text="HEX", width=40, height=22, font=("Arial", 10, "bold"),
                       fg_color="#222222", hover_color="#444444", border_width=1, border_color="gray")
         btn_hex.configure(command=lambda b=btn_hex: self.copy_with_feedback(color.hex_code, b, "HEX"))
         btn_hex.pack(side="left", padx=2)
         
-        rgb_val = str(color.rgb_tuple)
+        rgb_str = str(color.rgb_tuple)
         btn_rgb = ctk.CTkButton(actions, text="RGB", width=40, height=22, font=("Arial", 10, "bold"),
                       fg_color="#222222", hover_color="#444444", border_width=1, border_color="gray")
-        btn_rgb.configure(command=lambda b=btn_rgb: self.copy_with_feedback(rgb_val, b, "RGB"))
+        btn_rgb.configure(command=lambda b=btn_rgb: self.copy_with_feedback(rgb_str, b, "RGB"))
         btn_rgb.pack(side="left", padx=2)
         
         ctk.CTkButton(actions, text="✕", width=25, height=22, font=("Arial", 12, "bold"),
                       fg_color="transparent", hover_color="#C62828", text_color="#FF5555",
-                      command=lambda idx=real_index: self.delete_single_color(idx)).pack(side="left", padx=(5, 0))
+                      command=lambda c_id=color.id: self.delete_by_id(c_id)).pack(side="left", padx=(5, 0))
 
-    def delete_single_color(self, index):
-        if 0 <= index < len(self.history):
-            del self.history[index]
+        if pack_now: row.pack(fill="x", pady=2)
+        return row
+
+    def delete_by_id(self, color_id, save=True):
+        # 1. Borrado visual O(1) usando el mapa
+        if color_id in self.widget_map:
+            widget = self.widget_map[color_id]
+            widget.destroy()
+            del self.widget_map[color_id]
+        
+        # 2. Borrado de datos (Solo si es una acción del usuario)
+        if save:
+            self.history = [c for c in self.history if c.id != color_id]
             self.repo.save_all(self.history)
-            self.refresh_list_ui()
+
+    def clear_all_history(self):
+        for w in self.scroll_frame.winfo_children(): w.destroy()
+        self.widget_map.clear()
+        self.history.clear()
+        self.repo.save_all([])
 
     def trigger_zoom_toggle(self):
         self.after(0, self._sync_zoom_toggle)
@@ -304,11 +328,6 @@ class ChromaApp(ctk.CTk):
 
     def trigger_capture(self):
         self.after(0, self.process_capture)
-
-    def clear_all_history(self):
-        self.history.clear()
-        self.repo.save_all([])
-        self.refresh_list_ui()
 
     def on_close(self):
         self.zoom_active = False
