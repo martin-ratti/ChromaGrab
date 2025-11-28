@@ -1,6 +1,8 @@
 import customtkinter as ctk
 from PIL import Image, ImageTk
 import pyautogui
+import winsound
+import threading
 from src.core.use_cases import capture_color_use_case
 from src.infrastructure.services import ScreenService, ClipboardService, InputListener, SoundService
 from src.infrastructure.repositories import JsonColorRepository
@@ -9,6 +11,7 @@ THEME = {
     "bg_main": "#121212",
     "bg_card": "#1E1E1E",
     "primary": "#7C4DFF",
+    "primary_hover": "#651FFF",
     "cyan": "#00E5FF",
     "text_main": "#FFFFFF",
     "danger": "#CF6679",
@@ -79,7 +82,6 @@ class ChromaApp(ctk.CTk):
         self.after(100, self.load_saved_history)
 
     def _setup_ui(self):
-        # MODO EXPANDIDO
         self.expanded_container = ctk.CTkFrame(self, fg_color="transparent")
         self.expanded_container.pack(fill="both", expand=True)
 
@@ -123,7 +125,6 @@ class ChromaApp(ctk.CTk):
                                        command=self.clear_all_history)
         self.btn_clear.pack()
 
-        # MODO COMPACTO
         self.compact_container = ctk.CTkFrame(self, fg_color=THEME["bg_main"], corner_radius=0)
         
         self.compact_color_box = ctk.CTkLabel(self.compact_container, text="", width=40, height=40, bg_color="gray", corner_radius=5)
@@ -162,15 +163,18 @@ class ChromaApp(ctk.CTk):
             self.history.insert(0, color)
             if len(self.history) > HISTORY_LIMIT:
                 removed = self.history.pop()
-                self.delete_by_id(removed.id, save=False)
-                
-            self.repo.save_all(self.history)
+                # Borramos visualmente si existe (aunque con refresh_list no es critico, ahorra memoria)
+                if removed.id in self.widget_map:
+                    self.widget_map[removed.id].destroy()
+                    del self.widget_map[removed.id]
+
+            self._save_history_async()
             
             if self.is_compact:
                 self.update_compact_ui(color)
                 self._flash_button(self.btn_comp_hex, "HEX")
             else:
-                self.insert_color_row_at_top(color)
+                self.refresh_list_ui()
             
             self.clip_svc.copy(color.hex_code)
             self.show_toast(f"Copiado: {color.hex_code}", color.hex_code)
@@ -178,24 +182,20 @@ class ChromaApp(ctk.CTk):
         except Exception as e:
             print(f"Error: {e}")
 
-    def insert_color_row_at_top(self, color):
-        new_row = self.create_row_widget(color, pack_now=False)
-        current_widgets = self.scroll_frame.winfo_children()
-        if current_widgets:
-            new_row.pack(before=current_widgets[0], fill="x", pady=4)
-        else:
-            new_row.pack(fill="x", pady=4)
-
     def load_saved_history(self):
         self.history = self.repo.load_all()
         if self.history: self.last_capture = self.history[0]
+        self.refresh_list_ui()
+
+    def refresh_list_ui(self):
         self.widget_map = {}
         for w in self.scroll_frame.winfo_children(): w.destroy()
         for color in self.history:
             self.create_row_widget(color)
 
-    def create_row_widget(self, color, pack_now=True):
+    def create_row_widget(self, color):
         row = ctk.CTkFrame(self.scroll_frame, fg_color=THEME["bg_card"], corner_radius=8)
+        row.pack(fill="x", pady=4)
         self.widget_map[color.id] = row 
         
         try:
@@ -224,16 +224,20 @@ class ChromaApp(ctk.CTk):
                       fg_color="transparent", hover_color=THEME["bg_main"], text_color="#666",
                       command=lambda c_id=color.id: self.delete_by_id(c_id)).pack(side="left", padx=(5, 0))
 
-        if pack_now: row.pack(fill="x", pady=4)
-        return row
-
-    def delete_by_id(self, color_id, save=True):
+    def delete_by_id(self, color_id):
+        # 1. Borrado Visual Quirúrgico (Instantáneo)
         if color_id in self.widget_map:
             self.widget_map[color_id].destroy()
             del self.widget_map[color_id]
-        if save:
-            self.history = [c for c in self.history if c.id != color_id]
-            self.repo.save_all(self.history)
+        
+        # 2. Actualización de Datos
+        self.history = [c for c in self.history if c.id != color_id]
+        
+        # 3. Guardado Async (No bloquea UI)
+        self._save_history_async()
+
+    def _save_history_async(self):
+        threading.Thread(target=self.repo.save_all, args=(self.history,), daemon=True).start()
 
     def copy_with_feedback(self, text, button_widget, original_text):
         if not text: return
@@ -244,15 +248,12 @@ class ChromaApp(ctk.CTk):
         if not button.winfo_exists(): return
         original_fg = button.cget("fg_color")
         original_hover = button.cget("hover_color")
-        original_text_color = button.cget("text_color")
-        
         button.configure(text="✔", fg_color=THEME["success"], hover_color=THEME["success"], text_color="black")
         
         def revert():
             try:
                 if button.winfo_exists():
-                    button.configure(text=original_text, fg_color=original_fg, 
-                                     hover_color=original_hover, text_color=original_text_color)
+                    button.configure(text=original_text, fg_color=original_fg, hover_color=original_hover, text_color="white")
             except: pass
         self.after(1000, revert)
 
@@ -274,6 +275,7 @@ class ChromaApp(ctk.CTk):
             self.compact_container.pack_forget()
             self.expanded_container.pack(fill="both", expand=True)
             self.geometry("540x680")
+            self.refresh_list_ui()
 
     def update_compact_ui(self, color):
         self.last_capture = color
@@ -297,7 +299,7 @@ class ChromaApp(ctk.CTk):
         for w in self.scroll_frame.winfo_children(): w.destroy()
         self.widget_map.clear()
         self.history.clear()
-        self.repo.save_all([])
+        self._save_history_async()
 
     def trigger_zoom_toggle(self):
         self.after(0, self._sync_zoom_toggle)
