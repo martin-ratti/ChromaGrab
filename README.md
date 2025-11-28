@@ -114,7 +114,7 @@ python main.py
 Para generar un ejecutable único y portable que incluya el icono:
 
 ```bash
-pyinstaller --onefile --noconsole --icon=icon.ico --name="ChromaGrab" main.py
+python build.py
 ```
 
 -----
