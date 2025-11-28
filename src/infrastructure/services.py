@@ -1,14 +1,13 @@
 import mss
 import pyautogui
 import pyperclip
-import winsound  # <--- Para el sonido
+import winsound
 from pynput import keyboard
 from typing import Callable
 from PIL import Image
 import platform
 import ctypes
 
-# Fix DPI
 if platform.system() == "Windows":
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1) 
@@ -52,18 +51,10 @@ class ClipboardService:
         pyperclip.copy(text)
 
 class SoundService:
-    """Genera sonidos de sistema agradables."""
-    
     def play_capture(self):
-        # Reproduce un 'bip' agudo y corto (1000Hz, 100ms)
-        # Esto suena más 'tech' y menos 'error de windows'
         winsound.Beep(1000, 100) 
 
 class InputListener:
-    """
-    Escucha global de teclas.
-    Ahora soporta captura (INSERT) y toggle de zoom (ALT+Z).
-    """
     def __init__(self, on_capture: Callable, on_toggle_zoom: Callable):
         self.on_capture = on_capture
         self.on_toggle_zoom = on_toggle_zoom
@@ -73,7 +64,6 @@ class InputListener:
     def start(self):
         if not self.listener:
             self.is_active = True
-            # Definimos los atajos aquí
             self.listener = keyboard.GlobalHotKeys({
                 '<insert>': self._on_capture_trigger,
                 '<alt>+z': self._on_zoom_trigger

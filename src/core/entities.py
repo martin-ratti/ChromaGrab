@@ -3,10 +3,9 @@ import uuid
 
 @dataclass
 class ColorCapture:
-    """Entidad que representa un color capturado."""
     hex_code: str
     rgb_tuple: tuple[int, int, int]
-    id: str = field(default_factory=lambda: uuid.uuid4().hex) # ID único automático
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
     
     def get_formatted(self, format_type: str) -> str:
         if format_type == "RGB":
